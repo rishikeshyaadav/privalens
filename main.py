@@ -1,68 +1,126 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Privalens Secure ID</title>
-    <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #1a1a2e; color: white; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-        .box { background: #16213e; padding: 40px; border-radius: 15px; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.5); width: 350px; }
-        h2 { margin-bottom: 20px; color: #0f3460; text-shadow: 0 0 5px #e94560; color: #fff; }
-        video { width: 100%; border-radius: 10px; border: 2px solid #e94560; margin-bottom: 15px; }
-        input { width: 90%; padding: 12px; border-radius: 5px; border: none; margin-bottom: 15px; background: #0f3460; color: white; outline: none; }
-        button { width: 100%; padding: 12px; background: #e94560; color: white; border: none; border-radius: 5px; font-weight: bold; cursor: pointer; transition: 0.3s; }
-        button:hover { background: #c0354e; }
-        #msg { margin-top: 15px; font-size: 0.9em; min-height: 20px; }
-    </style>
-</head>
-<body>
-    <div class="box">
-        <h2>👁️ Privalens ID</h2>
-        <video id="video" autoplay></video>
-        <input type="text" id="username" placeholder="Enter Personnel Name" required autocomplete="off">
-        <button id="snap">CAPTURE BIOMETRIC</button>
-        <p id="msg"></p>
-        <canvas id="canvas" width="320" height="240" style="display:none;"></canvas>
-    </div>
-    <script>
-        const video = document.getElementById('video');
-        const canvas = document.getElementById('canvas');
-        const snap = document.getElementById('snap');
-        const msg = document.getElementById('msg');
-        const nameInput = document.getElementById('username');
+import cv2
+import numpy as np
+import os
+import csv
+from datetime import datetime
 
-        navigator.mediaDevices.getUserMedia({ video: true })
-            .then(stream => { video.srcObject = stream; })
-            .catch(err => { msg.innerText = "Error: Camera blocked"; msg.style.color = "red"; });
+# --- CONFIGURATION ---
+DB_FOLDER = "faces_db"
+BLINK_MIN_FRAMES = 2
+BLINK_MAX_FRAMES = 5
+ATTENDANCE_FILE = f"Attendance_{datetime.now().strftime('%Y-%m-%d')}.csv"
 
-        snap.addEventListener("click", () => {
-            const name = nameInput.value;
-            if(!name) { 
-                msg.innerText = "⚠️ Please enter a name first"; 
-                msg.style.color = "yellow"; 
-                return; 
-            }
-            
-            // Visual feedback
-            snap.innerText = "Processing...";
-            snap.disabled = true;
+print("🚀 Initializing Privalens Pro...")
 
-            const context = canvas.getContext('2d');
-            context.drawImage(video, 0, 0, 320, 240);
-            const imageData = canvas.toDataURL('image/jpeg');
+# 1. SETUP CAMERA & DETECTORS
+cap = cv2.VideoCapture(0)
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_eye.xml")
+recognizer = cv2.face.LBPHFaceRecognizer_create()
 
-            fetch('/upload', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: name, image: imageData })
-            })
-            .then(res => res.json())
-            .then(data => {
-                msg.innerText = data.message;
-                msg.style.color = data.message.includes("Success") ? "#4caf50" : "red";
-                snap.innerText = "CAPTURE BIOMETRIC";
-                snap.disabled = false;
-                if(data.message.includes("Success")) nameInput.value = "";
-            });
-        });
-    </script>
-</body>
-</html>
+# 2. HELPER: PRIVACY FILTER
+def apply_tech_filter(img, face_rect):
+    x, y, w, h = face_rect
+    color = (0, 255, 0)
+    d = 20 # Line length
+    t = 2  # Thickness
+    # Corners
+    cv2.line(img, (x, y), (x+d, y), color, t)
+    cv2.line(img, (x, y), (x, y+d), color, t)
+    cv2.line(img, (x+w, y), (x+w-d, y), color, t)
+    cv2.line(img, (x+w, y), (x+w, y+d), color, t)
+    cv2.line(img, (x, y+h), (x+d, y+h), color, t)
+    cv2.line(img, (x, y+h), (x, y+h-d), color, t)
+    cv2.line(img, (x+w, y+h), (x+w-d, y+h), color, t)
+    cv2.line(img, (x+w, y+h), (x+w, y+h-d), color, t)
+    return img
+
+# 3. HELPER: SAVE ATTENDANCE TO CSV
+logged_users = set()
+
+def log_attendance(name):
+    if name in logged_users:
+        return
+    
+    current_time = datetime.now().strftime("%H:%M:%S")
+    file_exists = os.path.isfile(ATTENDANCE_FILE)
+    
+    with open(ATTENDANCE_FILE, mode='a', newline='') as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(["Name", "Time", "Status"])
+        writer.writerow([name, current_time, "Present"])
+    
+    print(f"✅ LOGGED: {name} at {current_time}")
+    logged_users.add(name)
+
+# 4. TRAIN AI
+faces_data, ids, names, current_id = [], [], {}, 0
+if not os.path.exists(DB_FOLDER): os.makedirs(DB_FOLDER)
+files = [f for f in os.listdir(DB_FOLDER) if f.endswith(('.jpg', '.png'))]
+
+if files:
+    print(f"🧠 Training on {len(files)} faces...")
+    for filename in files:
+        path = os.path.join(DB_FOLDER, filename)
+        img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+        if img is None: continue
+        faces_rect = face_cascade.detectMultiScale(img, 1.1, 5)
+        for (x, y, w, h) in faces_rect:
+            faces_data.append(img[y:y+h, x:x+w])
+            ids.append(current_id)
+            names[current_id] = os.path.splitext(filename)[0]
+        current_id += 1
+    if faces_data: recognizer.train(faces_data, np.array(ids))
+else:
+    print("⚠️ Warning: No faces found! Please run app.py first.")
+
+# 5. RUN LOOP
+eyes_missing_frames = 0
+attendance_marked = False
+verified_user = ""
+print("📷 System Active. Press 'q' to quit.")
+
+while True:
+    success, img = cap.read()
+    if not success: break
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray, 1.3, 5)
+
+    for (x, y, w, h) in faces:
+        roi_gray = gray[y:y+h, x:x+w]
+        try:
+            id_pred, confidence = recognizer.predict(roi_gray)
+            user_name = names.get(id_pred, "Unknown") if (confidence < 85 and faces_data) else "Unknown"
+        except: user_name = "Unknown"
+
+        eyes = eye_cascade.detectMultiScale(roi_gray, 1.1, 4)
+        if len(eyes) >= 1:
+            if BLINK_MIN_FRAMES <= eyes_missing_frames <= BLINK_MAX_FRAMES and user_name != "Unknown":
+                attendance_marked = True
+                verified_user = user_name
+                log_attendance(user_name)
+            eyes_missing_frames = 0
+        else:
+            eyes_missing_frames += 1
+
+        if user_name == "Unknown":
+            color = (0, 0, 255)
+            status = "UNKNOWN"
+        elif attendance_marked and verified_user == user_name:
+            color = (0, 255, 0)
+            status = f"LOGGED: {datetime.now().strftime('%H:%M')}"
+            img = apply_tech_filter(img, (x, y, w, h))
+        else:
+            color = (0, 255, 255)
+            status = "BLINK TO VERIFY"
+            cv2.rectangle(img, (x, y), (x+w, y+h), color, 2)
+
+        cv2.putText(img, status, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        cv2.putText(img, user_name, (x, y+h+25), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+
+    cv2.imshow("Privalens Pro", img)
+    if cv2.waitKey(1) & 0xFF == ord('q'): break
+
+cap.release()
+cv2.destroyAllWindows()
