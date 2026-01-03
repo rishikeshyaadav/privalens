@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Privalens Registration</title>
+    <style>
+        body { font-family: sans-serif; text-align: center; background-color: #f4f4f9; padding: 20px; }
+        .box { background: white; padding: 30px; border-radius: 12px; display: inline-block; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        video { width: 320px; height: 240px; background: black; border-radius: 8px; border: 2px solid #333; }
+        input { padding: 10px; margin: 15px; width: 200px; border: 1px solid #ddd; border-radius: 4px; }
+        button { padding: 10px 20px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background-color: #0056b3; }
+        #msg { margin-top: 15px; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h2>📷 Privalens Registration</h2>
+        <input type="text" id="username" placeholder="Enter Full Name" required>
+        <br><video id="video" autoplay></video><br>
+        <button id="snap">Register Face</button>
+        <p id="msg"></p>
+        <canvas id="canvas" width="320" height="240" style="display:none;"></canvas>
+    </div>
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const snap = document.getElementById('snap');
+        const msg = document.getElementById('msg');
+        const nameInput = document.getElementById('username');
+
+        navigator.mediaDevices.getUserMedia({ video: true })
+            .then(stream => { video.srcObject = stream; })
+            .catch(err => { msg.innerText = "Camera Access Denied"; });
+
+        snap.addEventListener("click", () => {
+            const name = nameInput.value;
+            if(!name) { alert("Please enter a name!"); return; }
+            const context = canvas.getContext('2d');
+            context.drawImage(video, 0, 0, 320, 240);
+            const imageData = canvas.toDataURL('image/jpeg');
+            msg.innerText = "Uploading...";
+
+            fetch('/upload', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: name, image: imageData })
+            })
+            .then(res => res.json())
+            .then(data => {
+                msg.innerText = data.message;
+                msg.style.color = data.message.includes("Success") ? "green" : "red";
+                if(data.message.includes("Success")) nameInput.value = "";
+            });
+        });
+    </script>
+</body>
+</html>
